@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Messenger</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; margin: 0 auto; }
+        .panel { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h3 { margin-top: 0; color: #333; }
+        video { width: 100%; border-radius: 8px; background: #000; margin: 10px 0; }
+        #localVideo { height: 150px; }
+        #messages { height: 250px; overflow-y: auto; border: 1px solid #eee; border-radius: 8px; padding: 10px; margin: 10px 0; background: #fafafa; }
+        .msg { padding: 6px 12px; margin: 4px 0; border-radius: 16px; max-width: 80%; }
+        .msg.me { background: #007bff; color: white; margin-left: auto; }
+        .msg.them { background: #e9ecef; color: #333; }
+        .system { color: #888; font-style: italic; font-size: 0.9em; }
+        input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; margin: 5px 0; }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin: 5px 5px 5px 0; }
+        button:hover { background: #0056b3; }
+        button.secondary { background: #6c757d; }
+        button.secondary:hover { background: #545b62; }
+        #myId { background: #e7f3ff; padding: 8px 12px; border-radius: 6px; font-family: monospace; word-break: break-all; display: block; margin: 10px 0; }
+        .file-link { display: inline-block; margin: 5px 0; padding: 8px 12px; background: #e9ecef; border-radius: 6px; text-decoration: none; color: #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Видео панель -->
+        <div class="panel">
+            <h3>📹 Видео-звонок</h3>
+            <video id="remoteVideo" autoplay playsinline></video>
+            <video id="localVideo" autoplay muted playsinline></video>
+            
+            <input type="text" id="remotePeerId" placeholder="Вставь ID собеседника">
+            <div>
+                <button onclick="startCall()">📞 Позвонить</button>
+                <button class="secondary" onclick="toggleVideo()">🎥 Камера</button>
+                <button class="secondary" onclick="toggleAudio()">🎤 Микрофон</button>
+            </div>
+            
+            <p style="margin-top: 20px;"><strong>Твой ID для звонка:</strong></p>
+            <span id="myId">Загрузка...</span>
+        </div>
+
+        <!-- Чат панель -->
+        <div class="panel">
+            <h3>💬 Чат и файлы</h3>
+            <div id="messages"></div>
+            
+            <input type="text" id="msgInput" placeholder="Напиши сообщение..." onkeypress="if(event.key==='Enter')sendMessage()">
+            <div>
+                <button onclick="sendMessage()">➤ Отправить</button>
+                <input type="file" id="fileInput" style="display:none" onchange="sendFile()">
+                <button class="secondary" onclick="document.getElementById('fileInput').click()">📎 Файл</button>
+            </div>
+            <div id="fileName" style="font-size:0.9em; color:#666; margin-top:5px;"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        // ⚠️ ЗАМЕНИ ЭТУ СТРОКУ на URL твоего сервера после деплоя на Render
+        const SIGNALING_SERVER = 'http://localhost:3001';
+        
+        let peer, conn, call, localStream;
+        const socket = io(SIGNALING_SERVER);
+
+        // Инициализация PeerJS (использует бесплатный облажный сервер по умолчанию)
+        peer = new Peer();
+
+        peer.on('open', (id) => {
+            document.getElementById('myId').textContent = id;
+            socket.emit('register', id);
+            addMessage('system', `Твой ID: ${id} (скопируй и отправь собеседнику)`);
+        });
+
+        // Доступ к камере/микрофону
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(stream => {
+                localStream = stream;
+                document.getElementById('localVideo').srcObject = stream;
+
+                peer.on('call', (incomingCall) => {
+                    incomingCall.answer(stream);
+                    setupCall(incomingCall);
+                });
+            })
+            .catch(err => {
+                console.error('Media error:', err);
+                addMessage('system', '⚠️ Не удалось получить доступ к камере/микрофону');
+            });
+
+        // Входящее соединение для чата
+        peer.on('connection', (c) => {
+            conn = c;
+            setupDataChannel();
+        });
+
+        // 📞 Начало звонка
+        function startCall() {
+            const remoteId = document.getElementById('remotePeerId').value.trim();
+            if (!remoteId) return alert('Введите ID собеседника');
+
+            // Устанавливаем соединение для данных (чат)
+            if (!conn) {
+                conn = peer.connect(remoteId);
+                setupDataChannel();
+            }
+
+            // Начинаем видеозвонок
+            if (localStream) {
+                call = peer.call(remoteId, localStream);
+                setupCall(call);
+            }
+        }
+
+        function setupCall(callObj) {
+            callObj.on('stream', (remoteStream) => {
+                document.getElementById('remoteVideo').srcObject = remoteStream;
+                addMessage('system', '🎥 Видео подключено');
+            });
+            callObj.on('close', () => addMessage('system', '📞 Звонок завершён'));
+            call = callObj;
+        }
+
+        // 💬 Настройка канала данных (чат + файлы)
+        function setupDataChannel() {
+            conn.on('open', () => addMessage('system', '✅ Чат подключён'));
+            
+            conn.on('data', (data) => {
+                if (data.type === 'text') {
+                    addMessage('them', data.message);
+                } else if (data.type === 'file') {
+                    const link = document.createElement('a');
+                    link.href = data.data;
+                    link.download = data.name;
+                    link.className = 'file-link';
+                    link.textContent = `📥 ${data.name}`;
+                    document.getElementById('messages').appendChild(link);
+                    document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+                }
+            });
+        }
+
+        // Отправка текста
+        function sendMessage() {
+            const input = document.getElementById('msgInput');
+            const text = input.value.trim();
+            if (!text || !conn) return;
+            
+            conn.send({ type: 'text', message: text });
+            addMessage('me', text);
+            input.value = '';
+        }
+
+        // Отправка файла
+        function sendFile() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file || !conn) return;
+            if (file.size > 10 * 1024 * 1024) return alert('Файл больше 10 МБ может не передаться');
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                conn.send({ type: 'file', name: file.name, mimeType: file.type, data: e.target.result });
+                addMessage('me', `📤 Файл: ${file.name}`);
+                document.getElementById('fileName').textContent = '';
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Управление медиа
+        function toggleVideo() {
+            if (localStream?.getVideoTracks()[0]) {
+                const track = localStream.getVideoTracks()[0];
+                track.enabled = !track.enabled;
+                addMessage('system', track.enabled ? '🎥 Камера включена' : '🎥 Камера выключена');
+            }
+        }
+
+        function toggleAudio() {
+            if (localStream?.getAudioTracks()[0]) {
+                const track = localStream.getAudioTracks()[0];
+                track.enabled = !track.enabled;
+                addMessage('system', track.enabled ? '🎤 Микрофон включён' : '🎤 Микрофон выключен');
+            }
+        }
+
+        // Отображение сообщений
+        function addMessage(type, text) {
+            const div = document.createElement('div');
+            div.className = `msg ${type}`;
+            div.textContent = text;
+            document.getElementById('messages').appendChild(div);
+            document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
+        }
+
+        // Обработка ошибок соединения
+        socket.on('connect_error', (err) => {
+            addMessage('system', `⚠️ Ошибка подключения к серверу: ${err.message}`);
+        });
+    </script>
+</body>
+</html>

@@ -129,6 +129,10 @@
 
         // 💬 Настройка канала данных (чат + файлы)
         function setupDataChannel() {
+            if (conn.readyState === 'open'){
+                addMessage('system', '✅ Чат подключён');
+            }
+
             conn.on('open', () => addMessage('system', '✅ Чат подключён'));
             
             conn.on('data', (data) => {
@@ -144,13 +148,24 @@
                     document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;
                 }
             });
+
+            conn.on('error', (err) => {
+                console.error('Data channel error:', err);
+                addMessage('system', `❌ Ошибка чата: ${err.message || err}`);
+            });
         }
 
         // Отправка текста
         function sendMessage() {
             const input = document.getElementById('msgInput');
             const text = input.value.trim();
-            if (!text || !conn) return;
+            if (!text) return;
+            
+            // ✅ Проверяем, что соединение активно
+            if (!conn || conn.readyState !== 'open') {
+                addMessage('system', '⚠️ Чат не подключён. Нажмите "Позвонить" или дождитесь входящего соединения.');
+                return;
+            }
             
             conn.send({ type: 'text', message: text });
             addMessage('me', text);
